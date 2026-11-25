@@ -1,0 +1,8 @@
+.private/
+.local/
+.vendor/
+.work/
+__pycache__/
+*.pyc
+.DS_Store
+AGENTS.md

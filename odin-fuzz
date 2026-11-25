@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Packaged Nix entry point. Direct unpackaged checkout execution fails closed."""
+
+import os
+from pathlib import Path
+import sys
+
+HERE = Path(__file__).resolve()
+if os.environ.get("ODIN_FUZZ_PACKAGED") != "1" or not str(HERE).startswith("/nix/store/"):
+    print(
+        "odin-fuzz: direct unpackaged execution is disabled; "
+        "use the pinned Nix package (nix run . -- <args>) or a consumer Nix environment.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+sys.path.insert(0, str(HERE.parent / "tools"))
+from odin_fuzz import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
