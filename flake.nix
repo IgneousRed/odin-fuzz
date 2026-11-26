@@ -30,7 +30,7 @@
           llvmPackages,
           python3 ? pkgs.python315,
           src ? cleanSrc,
-          version ? "0.4.0",
+          version ? "0.5.0",
           patches ? [ ],
         }:
         pkgs.callPackage ./nix/package.nix {

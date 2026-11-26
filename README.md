@@ -46,7 +46,7 @@ Common options:
 - `--work-dir /path/to/output`: override output root (defaults to `<project>/.work/odin-fuzz/`).
 - `--corpus-dir /path/to/corpus`: persistent directory on `explore` to load prior coverage-winning cases and save newly discovered cases.
 - `--exclude <relpath>` (repeatable on `scan`/`explore`): exclude a project-relative file or directory without editing the target project.
-- `--budget SECONDS` (default `30`), `--seed N` (default `1`), `--max-cases N` (`0` uses `--budget`), `--timeout SECONDS` (default `2.0` per step).
+- `--budget SECONDS` (default `30`), `--seed N` (default `1`), `--max-cases N` (`0` uses `--budget`), `--timeout SECONDS` (default `2.0` per step), `--thread-count N` (default `2`, positive integer; pass `--thread-count 1` per invocation to compile target apps with `-thread-count:1`).
 
 | Exit code | Meaning |
 | --- | --- |

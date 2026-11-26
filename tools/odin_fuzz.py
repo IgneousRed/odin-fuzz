@@ -28,9 +28,10 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 FORMAT_VERSION = 3
 DEFAULT_BUDGET = 30.0
+DEFAULT_THREAD_COUNT = 2
 CASE_TIMEOUT = 2.0
 BUILD_TIMEOUT = 120
 CONFIRMATIONS = 2
@@ -1251,7 +1252,9 @@ def symbolize_pcs(binary, symbolizer, pcs, build_root):
     return resolved
 
 
-def build_application(app, initial, chain, settings, directory):
+def build_application(app, initial, chain, settings, directory, thread_count=DEFAULT_THREAD_COUNT):
+    if not is_strict_int(thread_count) or thread_count < 1:
+        raise ToolError("thread-count must be a positive integer")
     runtime = initial / RUNTIME
     runtime.mkdir()
     binary = runtime / "app"
@@ -1263,7 +1266,7 @@ def build_application(app, initial, chain, settings, directory):
         ir_dir.mkdir(parents=True, exist_ok=True)
         ir_res = run(
             [chain["odin"], "build", initial / app["path"], "-debug", "-sanitize:address",
-             "-build-mode:llvm-ir", "-use-single-module", "-thread-count:2",
+             "-build-mode:llvm-ir", "-use-single-module", f"-thread-count:{thread_count}",
              f"-out:{ir_dir}", *flags, *settings["odin_flags"]],
             cwd=initial, timeout=BUILD_TIMEOUT, log=directory / "coverage-ir.log", fsize_limit=None,
         )
@@ -1307,7 +1310,7 @@ def build_application(app, initial, chain, settings, directory):
         fallback_flags = list(flags)
         if settings["linker_flags"]:
             fallback_flags.append("-extra-linker-flags:" + shlex.join(settings["linker_flags"]))
-        result = run([chain["odin"], "build", initial / app["path"], "-debug", "-sanitize:address", "-thread-count:2",
+        result = run([chain["odin"], "build", initial / app["path"], "-debug", "-sanitize:address", f"-thread-count:{thread_count}",
                       f"-out:{binary}", *fallback_flags, *settings["odin_flags"]], cwd=initial,
                      timeout=BUILD_TIMEOUT, log=directory / "build.log", fsize_limit=None)
         if result["returncode"]:
@@ -3217,6 +3220,7 @@ def arguments(argv):
             p.add_argument("--seed", type=int, default=1)
             p.add_argument("--max-cases", type=int, default=0, help="per application; 0 uses the time budget")
             p.add_argument("--timeout", type=float, default=CASE_TIMEOUT, help="seconds per process")
+            p.add_argument("--thread-count", type=int, default=DEFAULT_THREAD_COUNT, help="Odin compiler thread count for target builds (positive integer)")
             p.add_argument("--corpus-dir", type=Path, help="persistent directory to load and save coverage-winning corpus cases")
     p = sub.add_parser("reproduce")
     p.add_argument("finding_directory", type=Path)
@@ -3239,8 +3243,9 @@ def main(argv=None):
         if not project.is_dir():
             raise ToolError(f"project directory does not exist: {project}")
         if args.command == "explore" and (not math.isfinite(args.budget) or args.budget <= 0 or
-                not math.isfinite(args.timeout) or args.timeout <= 0 or args.max_cases < 0 or args.seed < 0):
-            raise ToolError("budget and timeout must be finite and positive; max-cases and seed must be nonnegative")
+                not math.isfinite(args.timeout) or args.timeout <= 0 or args.max_cases < 0 or args.seed < 0 or
+                args.thread_count < 1):
+            raise ToolError("budget and timeout must be finite and positive; max-cases and seed must be nonnegative; thread-count must be positive")
         work = (args.work_dir or project / ".work" / "odin-fuzz").resolve()
         corpus_dir = args.corpus_dir.resolve() if (args.command == "explore" and args.corpus_dir) else None
         settings = project_settings(project)
@@ -3314,7 +3319,7 @@ def main(argv=None):
             shutil.copytree(original, initial, symlinks=True)
             print(f"Building application {app['name']} ({app['path']})", file=sys.stderr, flush=True)
             try:
-                build_info = build_application(app, initial, chain, settings, directory)
+                build_info = build_application(app, initial, chain, settings, directory, thread_count=args.thread_count)
                 if build_info["coverage_mode"] == "none":
                     report["gaps"].append(f"{app['name']} ({app['path']}): coverage-guided build fell back to uninstrumented ASan build.")
                 print(f"Exploring application inputs for {app['name']} ({app['path']})", file=sys.stderr, flush=True)

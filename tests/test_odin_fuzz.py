@@ -1532,6 +1532,81 @@ main :: proc() {
                     with self.assertRaises(odin_fuzz.ToolError):
                         odin_fuzz.scanner({"odin_report": ""})
 
+    def test_explore_thread_count_option_validation_and_forwarding(self):
+        from unittest import mock
+        sys.path.insert(0, str(ROOT / "tools"))
+        import odin_fuzz
+
+        # 1. Stand-in proof: build_application forwards -thread-count:1 in both LLVM-IR and fallback builds,
+        #    retaining all flags, and rejects non-positive thread counts.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            initial = root / "initial"
+            (initial / "src").mkdir(parents=True)
+            build_dir = root / "build"
+            build_dir.mkdir()
+            settings = {"collections": {"shared": "shared"}, "odin_flags": ["-define:FOO=1"], "linker_flags": []}
+            chain = {"odin": "/nix/store/fake-odin/bin/odin", "clang": "/nix/store/fake-clang/bin/clang", "nm": None}
+
+            with self.assertRaises(odin_fuzz.ToolError):
+                odin_fuzz.build_application({"path": "src"}, initial, chain, settings, build_dir, thread_count=0)
+            with self.assertRaises(odin_fuzz.ToolError):
+                odin_fuzz.build_application({"path": "src"}, initial, chain, settings, build_dir, thread_count=-1)
+
+            seen_cmds = []
+
+            def fake_run(cmd, **kwargs):
+                seen_cmds.append([str(x) for x in cmd])
+                # Force IR build to return nonzero on first call so fallback path is also exercised.
+                if "-build-mode:llvm-ir" in cmd:
+                    return {"returncode": 1, "stderr_log": str(build_dir / "coverage-ir.stderr")}
+                out_flag = next(str(x) for x in cmd if str(x).startswith("-out:"))
+                out_path = Path(out_flag.split(":", 1)[1])
+                out_path.write_bytes(b"fake")
+                return {"returncode": 0, "stderr_log": str(build_dir / "build.stderr")}
+
+            with mock.patch.object(odin_fuzz, "run", side_effect=fake_run):
+                info = odin_fuzz.build_application({"path": "src"}, initial, chain, settings, build_dir, thread_count=1)
+            self.assertEqual(info["coverage_mode"], "none")
+            self.assertEqual(len(seen_cmds), 2)
+            for cmd in seen_cmds:
+                self.assertIn("-thread-count:1", cmd)
+                self.assertNotIn("-thread-count:2", cmd)
+                self.assertIn("-debug", cmd)
+                self.assertIn("-sanitize:address", cmd)
+                self.assertIn("-define:FOO=1", cmd)
+            self.assertIn("-build-mode:llvm-ir", seen_cmds[0])
+            self.assertIn("-use-single-module", seen_cmds[0])
+
+        # 2. Packaged CLI validation & real single-thread target compilation with LLVM 23 coverage.
+        if os.environ.get("ODIN_FUZZ_BIN"):
+            with tempfile.TemporaryDirectory() as td:
+                proj = Path(td) / "proj"
+                work = Path(td) / "work"
+                write_files(proj, {
+                    "src/main.odin": '''package app
+import "core:os"
+main :: proc() {
+	if len(os.args) > 1 && os.args[1] == "ok" {
+		os.exit(0)
+	}
+}
+''',
+                })
+                bad0 = run_cli("explore", proj, "--work-dir", work, "--thread-count", "0")
+                self.assertEqual(bad0.returncode, 2, bad0.stdout + bad0.stderr)
+                bad_neg = run_cli("explore", proj, "--work-dir", work, "--thread-count", "-1")
+                self.assertEqual(bad_neg.returncode, 2, bad_neg.stdout + bad_neg.stderr)
+
+                res = run_cli("explore", proj, "--work-dir", work, "--budget", "8", "--max-cases", "10", "--seed", "1", "--thread-count", "1")
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                run_dir, _ = latest_report(work)
+                summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(summary["status"], "ok")
+                self.assertEqual(summary["finding_count"], 0)
+                self.assertEqual(summary["applications"][0]["coverage_mode"], "llvm_sancov")
+                self.assertGreater(summary["applications"][0]["first_party_edges_hit"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
