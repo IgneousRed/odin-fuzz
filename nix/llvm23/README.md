@@ -14,8 +14,10 @@ The result exports:
 2. `llvmPackages.{clang,llvm,bintools,lld,stdenv}`: wrapped Clang, LLVM tools, Darwin binutils aliases, LLD and the compiler environment. `llvm.dev` supplies `llvm-config` and headers; `llvm.lib` supplies the LLVM shared library.
 3. `raylib`, `raylibStatic`: unchanged 6.2 ABI/configurations, rebuilt using the selected compiler and SDK. Native Odin binding slots use these outputs; the existing source binding branches remain intact.
 4. `python`: Python 3.15.2 rebuilt with this compiler environment using full LTO, retaining native extension build support.
-5. `git`: Git 2.56.0 using the selected Python. It preserves the catalog source, feature flags, output set, build environment and check policy.
-6. `sdk`, `native`, `rawBintools`: explicit lower-level components for consumers that need them.
+5. `git`: Git 2.56.1 using the selected Python and Perl 5.44.0 module scope. It preserves the catalog feature flags, output set, build environment and check policy.
+6. `nodejs`: optional Node 26.13.1 with the common updated native libraries. This is an explicit binding; importing the unit does not change a consumer’s outer `pkgs.nodejs_26`.
+7. `dependencies`: the common library/source scope, including the selected Perl package set.
+8. `sdk`, `native`, `rawBintools`: explicit lower-level components for consumers that need them.
 
 For a merged environment, select `odin`, `llvmPackages.clang`, `llvmPackages.llvm` and `python`. Omit redundant `bintools` from `buildEnv.paths`; use it on a tool wrapper's PATH when needed. LLVM's tool view excludes raw Clang driver aliases so the wrapped compiler wins. Shared file normalization makes identical consumer copies use identical derivations.
 
@@ -25,44 +27,90 @@ standalone `git-package.nix` interface accepts `{ pkgs, python }`, so a
 consumer can use the same package without changing its existing source pins.
 It uses the upstream interpreter override and retains the catalog's build-time
 compiler. The resulting runtime closure shares the rebuilt Python/compiler
-outputs. It removes the older Python and LLVM backends while retaining the
-Perl support-file exception documented below. Identical consumers reuse the same
+outputs. Check the actual recursive closure before claiming removal of older
+Python or LLVM backends; preserve the Perl support-file exception documented
+below. Identical consumers reuse the same
 immutable Git output; rebuilding solely to change its build-time compiler does
 not remove that independent Perl exception.
 
 `python3 -I nix/llvm23/verify-git.py --git OUTPUT --reference CATALOG_OUTPUT --python PYTHON_OUTPUT
---https` checks native version/features, installed command/file parity, local
+--version 2.56.1 --https` checks native version/features, installed command/file parity, local
 repositories and archives, shallow-fetch bootstrap, worktrees, SHA256 objects, HTTP/HTTPS transport and
-Python/Perl/keychain-helper startup. It uses isolated temporary repositories and
+Python/Perl/keychain-helper startup and a real Gitweb CGI project listing. It uses isolated temporary repositories and
 configuration; it does not exercise a Perforce server, send mail or read/write
 keychain credentials.
 
-### Perl support-file exception
+### Shared dependency selection
 
-Git's pinned Perl 5.42.3 package retains three older support outputs through the
-include/library search paths in `Config_heavy.pl`:
+`native-sources.nix` records the fixed releases missing from the common lock;
+`perl-sources.nix` records the updated CPAN runtime/build/test releases. Their
+hashes are public source definitions, not a second resolver. Recipes retain
+catalog build features, outputs and check policies, with only the compatibility
+adaptations needed by the selected releases. Copy the whole unit, including
+these files, compatibility patches and `upstream/` manifest;
+`git-package.nix` imports that scope.
 
-| Output | NAR bytes |
-| --- | ---: |
-| `compiler-rt-libc-21.1.8` | 6,236,224 |
-| `compiler-rt-libc-21.1.8-dev` | 774,208 |
-| `libcxx-22.1.6+apple-sdk-27.0` | 13,034,520 |
-| Total | 20,044,952 |
+The common selection updates Zstd, Zlib, SQLite, Expat, Readline, Git, Perl and
+its modules, sigtool, Libplist, Libedit, GLFW, Kerberos, the Unicode/HTTP libraries,
+Libarchive, CMake, Tcl 8.6 and the public suffix database. ICU 79.1 uses the
+existing catalog recipe rather than a new provider. Node stays lazy. The Node configure interpreter is the catalog's
+`pythonOnBuildForHost`, distinct from the rebuilt runtime `python` selected by
+SDK wrappers. Compare both actual store identities when sharing builds.
 
-These are compiler support libraries/headers and SDK C++ stubs, not an older
-LLVM backend or Python interpreter. Preserve their configuration references;
-stripping them would hide Perl extension-build requirements. A different Git
-build environment leaves these separate Perl references intact.
+CMake 4.5.1 retains the provider's separate full and minimal variants, including
+the full variant's TLS/system-library features and every unrelated patch. Its
+build compiler remains the independent catalog compiler: it cannot depend on
+the native LLVM view it helps package. LLVM packaging uses the independent
+public Python 3.15 interpreter, not the custom interpreter built by that LLVM.
+GTK-Doc likewise uses the public build interpreter. Tcl stays in the 8.6 ABI
+family for SQLite and the existing Expect 5/DejaGNU test harness.
 
-A source-only assessment found that a Perl migration would have to replace the
-current 52,214,008-byte interpreter output and migrate 36 module outputs totalling
-5,518,424 bytes, including native extensions, before relinking Git's helper
-dependencies. New output sizes and build cost have not been measured. Working
-packages must remain during that migration, and old roots may still retain the
-support files. No measured net space benefit justifies a new Perl build or
-download for the current task.
+Rust 1.100 uses the upstream Nixpkgs family recipe recorded unchanged under
+`upstream/`, with the locked provider's matching bootstrap/cargo/platform APIs.
+The small owned adapter applies the upstream builder stack correction while
+preserving fatal warnings, both upstream compatibility patches, native and Wasm
+standard libraries, rustc development support and Cargo auditing. Its catalog
+LLVM provider is distinct from the immutable native Odin/fuzzer compiler view;
+neither a global rustup change nor a substitute binary provider is required.
+That shared provider selects LLVM and TableGen 23.1.6, public Python 3.15 for
+both packaging and lit's psutil environment, and the common CMake/library scope.
+The existing independent catalog compiler still bootstraps those source builds.
 
-The native package exposes interpreter-based LLVM helper commands through `native.auxiliary` on explicit demand. Its Python is the same rebuilt `python`, and its Perl is the pinned catalog package. `set-xcode-analyzer` is not exposed: it requires Xcode/PyObjC integration. The original upstream script is retained as non-executable data.
+Perl's extension configuration retains its compiler support headers/libraries
+and SDK C++ stubs. These are not an older LLVM backend. Do not strip their
+references or delete working roots to claim a smaller runtime. Output sizes and
+recursive references must be measured for each finalized selection; old
+interpreter/module proofs do not establish a new Perl ABI.
+
+The Perl core suite stays enabled. Its Darwin file-discovery test searches the
+real shared libperl built by the test tree rather than a nonexistent on-disk
+libc (modern macOS supplies libc through the dyld cache). The result-count
+assertion and all existing XS load/unload checks are retained.
+
+The native package exposes interpreter-based LLVM helper commands through
+`native.auxiliary` on explicit demand, using the same selected Python and Perl.
+`set-xcode-analyzer` is not exposed: it requires Xcode/PyObjC integration. The
+original upstream script is retained as non-executable data.
+
+### Compatibility holds
+
+1. Cctools remains 1010.6. The 1035.1.102 source removes assembler, prebinding
+   and legacy-support source targets installed by the current recipe. Dropping
+   those commands or merging a second legacy source is not this upgrade.
+2. OpenSSL remains the current supported 3.5.9 LTS shared ABI, not merely the
+   catalog default. Python 3.15.2's OpenSSL 4 branch incorrectly marks TLS
+   1.0–1.2 unavailable; the [upstream fix](https://github.com/python/cpython/commit/3e87c6315efb7593f97fc36a0fdf7a87e60ed90b)
+   is newer than that release. Stable Net::SSLeay 1.96 lacks the OpenSSL 4
+   compatibility introduced in the [development 1.97_01 release](https://metacpan.org/release/CHRISN/Net-SSLeay-1.97_01).
+   Node 26 also retains the deprecated engine API; OpenSSL 4 removes that
+   functionality. Retiring those features or adopting development providers is
+   not implied by selecting the newest compatible shared libraries.
+3. Preserve the SDK 14.4 header/framework cohort, including its CUPS headers
+   and Apple-specific library interfaces, plus the SDK 27 C++ link stubs.
+   Newer independent upstream library versions are not interchangeable with
+   this platform API. The host macOS supplies their runtime implementation.
+4. Linux retains its separate LLVM 22 toolchain. This Apple Silicon unit does
+   not certify Linux, Intel macOS or the Emscripten LLVM 24 toolchain.
 
 ## Compatibility choices
 
@@ -95,19 +143,12 @@ The approved checker uses a preferred interpreter only when it is already execut
 
 Do not alter consumer source pins just to adopt this toolchain. Supply the exact existing linter source/revision to its canonical recipe and retain the consumer's real compiler gates before invoking the packaged CLI. Runtime evidence for this candidate is recorded separately; adding the bundle alone does not certify every application's targets or justify deleting old dependencies.
 
-## Verified scope
+## Verification scope
 
-The candidate was checked on Apple Silicon macOS 26 with odin-lint 0.7.6 source revision `d20eac1dbe6b5b6dd7cc87b1e3c30d5f6cc1e0de`. Verification covered maximal compatible compiler checks, native debug execution, static/dynamic Raylib linkage, a debug `js_wasm32` object, C++ and Objective-C execution, debug-map verification and the six SDK tool aliases. SDK headers and frameworks matched the pinned original. The current implementation passed self-lint, all 16 Odin tests and 43 normal CLI tests. Python passed compression/database/TLS/decimal/ctypes checks and built/imported a native extension using its actual compiler configuration.
-
-A source archive without Git metadata evaluated and built the same core package outputs, ran through the canonical launcher, and switched its checker cache from the public bootstrap to the rebuilt Python after a successful read-only report. The checker passed 14 protocol/selection/root-lifetime fixtures, and the launcher passed 16 fixtures. Optional LLVM helpers were checked separately; `scan-view` was checked for command-line startup only.
-
-The Git interpreter override passed 30 focused checks against the original
-catalog package, including inventory parity for 149 built-in commands and
-installed files, local clone/commit/archive, shallow-fetch bootstrap, worktrees, SHA1/SHA256
-object interoperability, smart HTTP, public HTTPS and helper startup. A Git-free
-archive selected the same environment and ran the packaged Git. The complete
-selected environment retains only the three older support outputs documented
-above; Git and Perl features remain enabled. No additional Git/Perl compilation
-or download was required for this consolidation.
-
-The selected Odin and rebuilt-Python recursive runtime closures contain no LLVM/Clang 21 or 22, cctools or ld64 package. This describes those outputs, not the whole machine: production environments, public bootstrap roots and build-time dependencies can still retain older packages. Full application suites, distribution gates and fuzz-tool adoption are separate consumer responsibilities before promotion.
+This local dependency update is still being verified. Do not treat the older
+bundle's build or interpreter/module proofs as evidence for the new selection.
+Verification must cover native compiler/debug execution, C++ and Objective-C,
+static/dynamic Raylib, the supported Wasm object target, SDK tool aliases,
+Python standard-library/TLS/native-extension behavior, Perl/module ABI and Git
+features/distribution. The affected consumer's own compiler, lint, test and fuzz
+gates remain separate obligations.

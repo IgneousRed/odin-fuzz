@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--git", required=True, type=Path, help="selected Git output directory")
     parser.add_argument("--reference", required=True, type=Path, help="original catalog Git output")
     parser.add_argument("--python", required=True, type=Path, help="selected Python output directory")
+    parser.add_argument("--version", help="expected selected version when upgrading the catalog package")
     parser.add_argument("--https", action="store_true", help="also query the public upstream Git tag")
     args = parser.parse_args()
     selected = args.git.resolve()
@@ -25,12 +26,12 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="shared-git-check-") as temporary:
         root = Path(temporary)
-        home = root / "home"
-        home.mkdir()
+        configuration = root / "config"
+        configuration.mkdir()
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith("GIT_") and key not in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")}
         environment.update({
-            "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_CONFIG_HOME": str(configuration),
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat",
             "GIT_AUTHOR_NAME": "Git package fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
@@ -46,12 +47,15 @@ def main():
             return result.stdout
 
         version = run("version", [git, "--version"])
-        assert version == run("reference version", [reference / "bin/git", "--version"])
+        reference_version = run("reference version", [reference / "bin/git", "--version"])
+        assert version == (f"git version {args.version}\n".encode() if args.version else reference_version)
         builtins = run("builtins", [git, "--list-cmds=builtins"])
         assert builtins == run("reference builtins", [reference / "bin/git", "--list-cmds=builtins"])
         options = run("build features", [git, "version", "--build-options"])
         old_options = run("reference build features", [reference / "bin/git", "version", "--build-options"])
-        assert options == old_options, (options, old_options)
+        assert options.splitlines()[0] == version.strip()
+        assert old_options.splitlines()[0] == reference_version.strip()
+        assert options.splitlines()[1:] == old_options.splitlines()[1:], (options, old_options)
         entries = lambda folder: {str(path.relative_to(folder)) for path in folder.rglob("*")}
         assert entries(selected) == entries(reference), "installed Git file/command set changed"
         records.append({"name": "installed file and command set", "returncode": 0})
@@ -93,15 +97,24 @@ def main():
             "PATH_INFO": "/remote.git/info/refs", "QUERY_STRING": "service=git-upload-pack",
         })
         assert b"application/x-git-upload-pack-advertisement" in response, response
+        gitweb_config = root / "gitweb.conf"
+        gitweb_config.write_text(f'$projectroot = q{{{root}}};\n$gitbin = q{{{git}}};\n')
+        page = run("Gitweb CGI project listing", [selected / "share/gitweb/gitweb.cgi"], extra={
+            "GITWEB_CONFIG": str(gitweb_config), "REQUEST_METHOD": "GET",
+            "QUERY_STRING": "", "SCRIPT_NAME": "/gitweb.cgi", "SERVER_NAME": "localhost",
+            "SERVER_PORT": "80", "SERVER_PROTOCOL": "HTTP/1.1", "GATEWAY_INTERFACE": "CGI/1.1",
+        })
+        assert b"Content-Type: text/html" in page and b"remote.git" in page, page
         sha256 = root / "sha256"
         run("SHA256 repository", [git, "init", "--quiet", "--object-format=sha256", sha256])
         run("SHA256 commit", [git, "commit", "--quiet", "--allow-empty", "-m", "Hash fixture"], sha256)
         run("reference reads SHA256 objects", [reference / "bin/git", "fsck", "--full"], sha256)
         assert re.fullmatch(rb"[0-9a-f]{64}", run("SHA256 revision", [git, "rev-parse", "HEAD"], sha256).strip())
         if args.https:
+            tag = "refs/tags/v" + version.decode().strip().removeprefix("git version ")
             remote = run("public HTTPS tag", [git, "ls-remote", "--exit-code",
-                         "https://github.com/git/git.git", "refs/tags/v2.56.0"])
-            assert re.fullmatch(rb"[0-9a-f]{40}\trefs/tags/v2\.56\.0\n", remote), remote
+                         "https://github.com/git/git.git", tag])
+            assert re.fullmatch(rb"[0-9a-f]{40}\t" + re.escape(tag.encode()) + rb"\n", remote), remote
 
     print(json.dumps({"status": "passed", "git": str(selected), "checks": records,
                       "builtin_count": len(builtins.splitlines()),
